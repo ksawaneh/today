@@ -1,0 +1,473 @@
+package ui
+
+import (
+	"testing"
+	"time"
+
+	"today/internal/storage"
+
+	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/exp/teatest"
+)
+
+// TestIntegration_TaskLifecycle tests the complete task workflow:
+// add task -> complete task -> delete task
+func TestIntegration_TaskLifecycle(t *testing.T) {
+	setupTest(t)
+	store := createTestStorage(t)
+
+	app := NewApp(store)
+
+	// Use teatest to simulate terminal interaction
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(100, 30))
+
+	// Wait for initial data load
+	time.Sleep(50 * time.Millisecond)
+
+	// Press 'a' to start adding a task
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Type task text
+	taskText := "Integration test task"
+	for _, r := range taskText {
+		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Press enter to save
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify task was added
+	tasks, err := store.LoadTasks()
+	if err != nil {
+		t.Fatalf("LoadTasks() error = %v", err)
+	}
+	if len(tasks.Tasks) != 1 {
+		t.Fatalf("expected 1 task, got %d", len(tasks.Tasks))
+	}
+	if tasks.Tasks[0].Text != taskText {
+		t.Errorf("task.Text = %q, want %q", tasks.Tasks[0].Text, taskText)
+	}
+	if tasks.Tasks[0].Done {
+		t.Error("task should not be completed yet")
+	}
+
+	// Press 'd' to complete the task
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify task was completed
+	tasks, err = store.LoadTasks()
+	if err != nil {
+		t.Fatalf("LoadTasks() error = %v", err)
+	}
+	if !tasks.Tasks[0].Done {
+		t.Error("task should be completed")
+	}
+	if tasks.Tasks[0].CompletedAt == nil {
+		t.Error("task.CompletedAt should be set")
+	}
+
+	// Press 'x' to delete the task
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify task was deleted
+	tasks, err = store.LoadTasks()
+	if err != nil {
+		t.Fatalf("LoadTasks() error = %v", err)
+	}
+	if len(tasks.Tasks) != 0 {
+		t.Errorf("expected 0 tasks after deletion, got %d", len(tasks.Tasks))
+	}
+
+	// Press 'q' to quit
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second))
+}
+
+// TestIntegration_HabitCreationAndTracking tests the complete habit workflow:
+// add habit -> toggle completion -> check streak
+func TestIntegration_HabitCreationAndTracking(t *testing.T) {
+	setupTest(t)
+	store := createTestStorage(t)
+
+	app := NewApp(store)
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(100, 30))
+
+	// Wait for initial data load
+	time.Sleep(50 * time.Millisecond)
+
+	// Switch to habits pane (press tab twice)
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	time.Sleep(20 * time.Millisecond)
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	time.Sleep(20 * time.Millisecond)
+
+	// Press 'a' to add a habit
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Type habit name
+	habitName := "Exercise"
+	for _, r := range habitName {
+		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Press enter to go to icon step
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	time.Sleep(20 * time.Millisecond)
+
+	// Type icon
+	habitIcon := "🏃"
+	for _, r := range habitIcon {
+		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Press enter to save
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify habit was created
+	habits, err := store.LoadHabits()
+	if err != nil {
+		t.Fatalf("LoadHabits() error = %v", err)
+	}
+	if len(habits.Habits) != 1 {
+		t.Fatalf("expected 1 habit, got %d", len(habits.Habits))
+	}
+	if habits.Habits[0].Name != habitName {
+		t.Errorf("habit.Name = %q, want %q", habits.Habits[0].Name, habitName)
+	}
+	if habits.Habits[0].Icon != habitIcon {
+		t.Errorf("habit.Icon = %q, want %q", habits.Habits[0].Icon, habitIcon)
+	}
+
+	habitID := habits.Habits[0].ID
+
+	// Press space to toggle habit completion for today
+	tm.Send(tea.KeyMsg{Type: tea.KeySpace})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify habit was completed today
+	habits, err = store.LoadHabits()
+	if err != nil {
+		t.Fatalf("LoadHabits() error = %v", err)
+	}
+	today := time.Now().Format("2006-01-02")
+	if !store.IsHabitDoneOnDate(habits, habitID, today) {
+		t.Error("habit should be marked as done for today")
+	}
+
+	// Check streak
+	streak := store.GetHabitStreak(habits, habitID)
+	if streak != 1 {
+		t.Errorf("GetHabitStreak() = %d, want 1", streak)
+	}
+
+	// Press space again to toggle off
+	tm.Send(tea.KeyMsg{Type: tea.KeySpace})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify habit is no longer completed
+	habits, err = store.LoadHabits()
+	if err != nil {
+		t.Fatalf("LoadHabits() error = %v", err)
+	}
+	if store.IsHabitDoneOnDate(habits, habitID, today) {
+		t.Error("habit should not be marked as done after toggle off")
+	}
+
+	// Press 'q' to quit
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second))
+}
+
+// TestIntegration_TimerWorkflow tests the complete timer workflow:
+// start timer -> switch project -> stop timer
+func TestIntegration_TimerWorkflow(t *testing.T) {
+	setupTest(t)
+	store := createTestStorage(t)
+
+	app := NewApp(store)
+
+	tm := teatest.NewTestModel(t, app, teatest.WithInitialTermSize(100, 30))
+
+	// Wait for initial data load
+	time.Sleep(50 * time.Millisecond)
+
+	// Switch to timer pane (press tab once)
+	tm.Send(tea.KeyMsg{Type: tea.KeyTab})
+	time.Sleep(20 * time.Millisecond)
+
+	// Press 's' to start/switch timer
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Type project name
+	project1 := "Project Alpha"
+	for _, r := range project1 {
+		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Press enter to start
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify timer is running
+	timer, err := store.LoadTimer()
+	if err != nil {
+		t.Fatalf("LoadTimer() error = %v", err)
+	}
+	if timer.Current == nil {
+		t.Fatal("timer.Current should not be nil")
+	}
+	if timer.Current.Project != project1 {
+		t.Errorf("Current.Project = %q, want %q", timer.Current.Project, project1)
+	}
+
+	// Let timer run for a bit
+	time.Sleep(100 * time.Millisecond)
+
+	// Press 's' to switch to another project
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Type new project name
+	project2 := "Project Beta"
+	for _, r := range project2 {
+		tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+
+	// Press enter to switch
+	tm.Send(tea.KeyMsg{Type: tea.KeyEnter})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify timer switched to new project
+	timer, err = store.LoadTimer()
+	if err != nil {
+		t.Fatalf("LoadTimer() error = %v", err)
+	}
+	if timer.Current == nil {
+		t.Fatal("timer.Current should not be nil after switch")
+	}
+	if timer.Current.Project != project2 {
+		t.Errorf("Current.Project = %q, want %q", timer.Current.Project, project2)
+	}
+
+	// Verify first project was saved as entry
+	if len(timer.Entries) != 1 {
+		t.Fatalf("expected 1 entry, got %d", len(timer.Entries))
+	}
+	if timer.Entries[0].Project != project1 {
+		t.Errorf("Entries[0].Project = %q, want %q", timer.Entries[0].Project, project1)
+	}
+
+	// Let timer run for a bit more
+	time.Sleep(100 * time.Millisecond)
+
+	// Press space to stop timer
+	tm.Send(tea.KeyMsg{Type: tea.KeySpace})
+	teatest.WaitFor(t, tm.Output(), func(bts []byte) bool {
+		return len(bts) > 0
+	}, teatest.WithDuration(100*time.Millisecond))
+
+	// Verify timer is stopped
+	timer, err = store.LoadTimer()
+	if err != nil {
+		t.Fatalf("LoadTimer() error = %v", err)
+	}
+	if timer.Current != nil {
+		t.Error("timer.Current should be nil after stop")
+	}
+
+	// Verify both projects are saved as entries
+	if len(timer.Entries) != 2 {
+		t.Fatalf("expected 2 entries, got %d", len(timer.Entries))
+	}
+
+	// Press 'q' to quit
+	tm.Send(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(time.Second))
+}
+
+// TestIntegration_PaneSwitching tests navigation between panes
+func TestIntegration_PaneSwitching(t *testing.T) {
+	setupTest(t)
+	store := createTestStorage(t)
+
+	app := NewApp(store)
+
+	// Initial pane should be tasks
+	if app.activePane != PaneTasks {
+		t.Errorf("initial activePane = %v, want %v", app.activePane, PaneTasks)
+	}
+	if !app.taskPane.IsFocused() {
+		t.Error("taskPane should be focused initially")
+	}
+
+	// Press tab to switch to timer
+	app, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if app.(*App).activePane != PaneTimer {
+		t.Errorf("activePane = %v, want %v", app.(*App).activePane, PaneTimer)
+	}
+	if !app.(*App).timerPane.IsFocused() {
+		t.Error("timerPane should be focused")
+	}
+	if app.(*App).taskPane.IsFocused() {
+		t.Error("taskPane should not be focused")
+	}
+
+	// Press tab to switch to habits
+	app, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if app.(*App).activePane != PaneHabits {
+		t.Errorf("activePane = %v, want %v", app.(*App).activePane, PaneHabits)
+	}
+	if !app.(*App).habitsPane.IsFocused() {
+		t.Error("habitsPane should be focused")
+	}
+
+	// Press tab to cycle back to tasks
+	app, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+	if app.(*App).activePane != PaneTasks {
+		t.Errorf("activePane = %v, want %v", app.(*App).activePane, PaneTasks)
+	}
+
+	// Press '1' to go directly to tasks
+	app, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	if app.(*App).activePane != PaneTasks {
+		t.Errorf("activePane = %v, want %v after pressing '1'", app.(*App).activePane, PaneTasks)
+	}
+
+	// Press '2' to go directly to timer
+	app, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	if app.(*App).activePane != PaneTimer {
+		t.Errorf("activePane = %v, want %v after pressing '2'", app.(*App).activePane, PaneTimer)
+	}
+
+	// Press '3' to go directly to habits
+	app, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	if app.(*App).activePane != PaneHabits {
+		t.Errorf("activePane = %v, want %v after pressing '3'", app.(*App).activePane, PaneHabits)
+	}
+}
+
+// TestIntegration_HelpOverlay tests the help system
+func TestIntegration_HelpOverlay(t *testing.T) {
+	setupTest(t)
+	store := createTestStorage(t)
+
+	app := NewApp(store)
+	app.width = 100
+	app.height = 30
+	app.updateLayout()
+
+	// Initially help should not be shown
+	if app.showHelp {
+		t.Error("help should not be shown initially")
+	}
+
+	// Press '?' to show help
+	app, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
+	if !app.(*App).showHelp {
+		t.Error("help should be shown after pressing '?'")
+	}
+
+	// View should show help overlay
+	view := app.(*App).View()
+	if len(view) == 0 {
+		t.Error("view should not be empty when help is shown")
+	}
+
+	// Press '?' or Esc to close help
+	app, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if app.(*App).showHelp {
+		t.Error("help should be hidden after pressing Esc")
+	}
+}
+
+// TestIntegration_CancelInput tests canceling input in various panes
+func TestIntegration_CancelInput(t *testing.T) {
+	setupTest(t)
+	store := createTestStorage(t)
+
+	tests := []struct {
+		name      string
+		setupPane func(*App)
+		checkCanceled func(*App) bool
+	}{
+		{
+			name: "cancel task input",
+			setupPane: func(a *App) {
+				a.setActivePane(PaneTasks)
+				// Simulate pressing 'a' to start adding
+				a.taskPane.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+			},
+			checkCanceled: func(a *App) bool {
+				return !a.taskPane.IsAdding()
+			},
+		},
+		{
+			name: "cancel timer input",
+			setupPane: func(a *App) {
+				a.setActivePane(PaneTimer)
+				// Simulate pressing 's' to start switching
+				a.timerPane.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+			},
+			checkCanceled: func(a *App) bool {
+				return !a.timerPane.IsSwitching()
+			},
+		},
+		{
+			name: "cancel habit input",
+			setupPane: func(a *App) {
+				a.setActivePane(PaneHabits)
+				// Simulate pressing 'a' to start adding
+				a.habitsPane.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+			},
+			checkCanceled: func(a *App) bool {
+				return !a.habitsPane.IsAdding()
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewApp(store)
+			tt.setupPane(app)
+
+			// Press Esc to cancel
+			app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+
+			if !tt.checkCanceled(app) {
+				t.Error("input should be canceled after pressing Esc")
+			}
+		})
+	}
+}

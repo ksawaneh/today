@@ -1,0 +1,208 @@
+.TH TODAY 1 "December 2025" "today 1.0" "User Commands"
+.SH NAME
+today \- A unified productivity dashboard for your terminal
+.SH SYNOPSIS
+.B today
+[\fIOPTIONS\fR]
+.SH DESCRIPTION
+.B today
+is a terminal-based productivity application that combines tasks, habits, and time tracking in a single, keyboard-driven interface. All data is stored locally as plain JSON files.
+.PP
+The application provides three main panes:
+.IP \(bu 2
+\fBTasks\fR: Manage your to-do list with vim-style navigation
+.IP \(bu 2
+\fBTimer\fR: Track time spent on projects with daily and weekly summaries
+.IP \(bu 2
+\fBHabits\fR: Track daily habits with visual week view and streak counting
+.SH OPTIONS
+.TP
+.BR \-h ", " \-\-help
+Display help message and exit
+.TP
+.BR \-v ", " \-\-version
+Display version information and exit
+.SH KEYBINDINGS
+.SS Global Keybindings
+.TP
+.B Tab
+Switch to the next pane (Tasks \(-> Timer \(-> Habits \(-> Tasks)
+.TP
+.B 1
+Jump directly to the Tasks pane
+.TP
+.B 2
+Jump directly to the Timer pane
+.TP
+.B 3
+Jump directly to the Habits pane
+.TP
+.B ?
+Show help overlay with all keybindings
+.TP
+.B q
+Quit the application
+.SS Tasks Pane
+.TP
+.BR j ", " Down
+Move selection down
+.TP
+.BR k ", " Up
+Move selection up
+.TP
+.B a
+Add a new task (enters input mode)
+.TP
+.BR d ", " Space ", " Enter
+Toggle the selected task's completion status
+.TP
+.B x
+Delete the selected task
+.TP
+.B g
+Jump to the first task
+.TP
+.B G
+Jump to the last task
+.SS Timer Pane
+.TP
+.BR Space ", " Enter
+Start or stop the current timer
+.TP
+.B s
+Switch to a different project (prompts for project name and starts new timer)
+.TP
+.B x
+Stop the current timer
+.SS Habits Pane
+.TP
+.BR j ", " Down
+Move selection down
+.TP
+.BR k ", " Up
+Move selection up
+.TP
+.B a
+Add a new habit (prompts for name, then icon)
+.TP
+.BR d ", " Space ", " Enter
+Toggle today's completion for the selected habit
+.TP
+.B x
+Delete the selected habit
+.SS Input Mode
+When adding tasks or habits, the following keys are available:
+.TP
+.B Enter
+Save the input and return to normal mode
+.TP
+.B Esc
+Cancel the input and return to normal mode without saving
+.SH DATA STORAGE
+All data is stored in the user's home directory under
+.IR ~/.today/ :
+.TP
+.I ~/.today/tasks.json
+Task list with completion status
+.TP
+.I ~/.today/habits.json
+Habit definitions and completion logs
+.TP
+.I ~/.today/timer.json
+Time tracking entries with project names and timestamps
+.PP
+All files are plain JSON and can be backed up, version controlled with git, or edited manually if needed.
+.SH CONFIGURATION
+An optional configuration file can be placed at:
+.PP
+.I ~/.config/today/config.yaml
+.PP
+The configuration file supports the following options:
+.TP
+.B data_dir
+Override the default data directory (default: ~/.today)
+.PP
+Example configuration:
+.PP
+.nf
+.RS
+data_dir: ~/Documents/today-data
+.RE
+.fi
+.SH EXAMPLES
+.TP
+Start the application:
+.PP
+.nf
+.RS
+$ today
+.RE
+.fi
+.TP
+Show version information:
+.PP
+.nf
+.RS
+$ today --version
+.RE
+.fi
+.TP
+Display help:
+.PP
+.nf
+.RS
+$ today --help
+.RE
+.fi
+.SH FILES
+.TP
+.I ~/.today/tasks.json
+Tasks database
+.TP
+.I ~/.today/habits.json
+Habits database
+.TP
+.I ~/.today/timer.json
+Timer entries database
+.TP
+.I ~/.config/today/config.yaml
+Optional configuration file
+.SH ENVIRONMENT
+.B today
+respects standard terminal environment variables:
+.TP
+.B TERM
+Terminal type, should support colors for best experience
+.TP
+.B NO_COLOR
+If set, disables colored output
+.SH EXIT STATUS
+.TP
+.B 0
+Success
+.TP
+.B 1
+Error occurred (config error, storage error, or runtime error)
+.SH TIPS
+.IP \(bu 2
+Use the \fB?\fR key anytime to see the help overlay with all available keybindings
+.IP \(bu 2
+The application auto-saves all changes immediately
+.IP \(bu 2
+Data files are plain JSON \(em safe to backup with rsync, git, or any backup tool
+.IP \(bu 2
+Resize your terminal anytime \(em the UI adapts to available space
+.IP \(bu 2
+Habits show completion for the last 7 days, with the rightmost dot being today
+.IP \(bu 2
+Timer automatically tracks cumulative time per day and week
+.IP \(bu 2
+Use vim-style \fBg\fR and \fBG\fR to quickly jump to top/bottom of lists
+.SH BUGS
+Report bugs at: https://github.com/yourusername/today/issues
+.SH AUTHOR
+Written by Your Name.
+.SH COPYRIGHT
+Copyright \(co 2025. Licensed under the MIT License.
+.SH SEE ALSO
+Full documentation and source code: https://github.com/yourusername/today

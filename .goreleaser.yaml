@@ -1,0 +1,178 @@
+# GoReleaser configuration for today
+# See https://goreleaser.com for documentation
+
+version: 2
+
+before:
+  hooks:
+    # Ensure dependencies are up to date
+    - go mod tidy
+    # Run tests before building
+    - go test ./...
+
+builds:
+  - id: today
+    # Entry point
+    main: ./cmd/today
+    # Binary name
+    binary: today
+    # Inject version information
+    ldflags:
+      - -s -w
+      - -X main.version={{.Version}}
+      - -X main.commit={{.Commit}}
+      - -X main.date={{.Date}}
+    # Build for multiple platforms
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    # Ignore combinations
+    ignore:
+      # Windows ARM64 is rare for CLI tools
+      - goos: windows
+        goarch: arm64
+    # Environment variables for build
+    env:
+      - CGO_ENABLED=0
+
+archives:
+  - id: today
+    # Archive name format: today_1.0.0_darwin_amd64.tar.gz
+    name_template: >-
+      {{ .ProjectName }}_
+      {{- .Version }}_
+      {{- .Os }}_
+      {{- .Arch }}
+    # Archive format per OS
+    format_overrides:
+      - goos: windows
+        format: zip
+    # Files to include in archive
+    files:
+      - README.md
+      - LICENSE
+      - docs/today.1
+
+checksum:
+  # Generate checksums file
+  name_template: 'checksums.txt'
+  algorithm: sha256
+
+changelog:
+  # Changelog format
+  sort: asc
+  use: github
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^ci:'
+      - '^chore:'
+      - '^build:'
+  groups:
+    - title: Features
+      regexp: '^.*?feat(\([[:word:]]+\))??!?:.+$'
+      order: 0
+    - title: Bug Fixes
+      regexp: '^.*?fix(\([[:word:]]+\))??!?:.+$'
+      order: 1
+    - title: Performance Improvements
+      regexp: '^.*?perf(\([[:word:]]+\))??!?:.+$'
+      order: 2
+    - title: Refactors
+      regexp: '^.*?refactor(\([[:word:]]+\))??!?:.+$'
+      order: 3
+    - title: Others
+      order: 999
+
+release:
+  # GitHub release configuration
+  github:
+    owner: yourusername
+    name: today
+  # Release name format
+  name_template: "v{{.Version}}"
+  # Draft release for manual review
+  draft: false
+  # Mark as prerelease if version contains -alpha, -beta, -rc
+  prerelease: auto
+  # Release footer
+  footer: |
+    ## Installation
+
+    ### Homebrew (macOS/Linux)
+    ```bash
+    brew install yourusername/tap/today
+    ```
+
+    ### Binary Download
+    Download the appropriate binary for your platform from the assets below.
+
+    ### Go Install
+    ```bash
+    go install github.com/yourusername/today/cmd/today@latest
+    ```
+
+    ## Verify Installation
+    ```bash
+    today --version
+    ```
+
+    **Full Changelog**: https://github.com/yourusername/today/compare/{{ .PreviousTag }}...{{ .Tag }}
+
+# Homebrew tap configuration
+brews:
+  - # Repository details
+    repository:
+      owner: yourusername
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    # Formula configuration
+    folder: Formula
+    # Homepage and description
+    homepage: https://github.com/yourusername/today
+    description: "A unified productivity dashboard for your terminal"
+    # License
+    license: MIT
+    # Caveats shown after installation
+    caveats: |
+      Run 'today' to start the app.
+      Data is stored in ~/.today/
+      Config (optional): ~/.config/today/config.yaml
+
+      Press '?' in the app for help.
+    # Test command
+    test: |
+      system "#{bin}/today", "--version"
+    # Install man page
+    install: |
+      bin.install "today"
+      man1.install "docs/today.1"
+
+# Snapcraft (Linux snap packages) - optional
+# snapcrafts:
+#   - name: today
+#     publish: true
+#     summary: A unified productivity dashboard for your terminal
+#     description: |
+#       today combines tasks, habits, and time tracking in a single,
+#       keyboard-driven terminal interface.
+#     grade: stable
+#     confinement: strict
+#     license: MIT
+
+# Docker images - optional
+# dockers:
+#   - image_templates:
+#       - "yourusername/today:{{ .Version }}"
+#       - "yourusername/today:latest"
+#     dockerfile: Dockerfile
+#     build_flag_templates:
+#       - "--pull"
+#       - "--label=org.opencontainers.image.created={{.Date}}"
+#       - "--label=org.opencontainers.image.revision={{.FullCommit}}"
+#       - "--label=org.opencontainers.image.version={{.Version}}"
