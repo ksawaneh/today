@@ -10,6 +10,7 @@ import (
 
 	"today/internal/config"
 	"today/internal/storage"
+	"today/internal/sync"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -78,6 +79,10 @@ type App struct {
 	habitsPaneStart int
 	habitsPaneEnd   int
 	contentTop      int // Y coordinate where content starts
+
+	// Git sync state
+	gitSync    *sync.GitSync  // nil if sync disabled
+	syncStatus *sync.Status   // cached sync status for UI display
 }
 
 type confirmDeleteState struct {
@@ -135,6 +140,12 @@ func NewApp(store *storage.Storage, styles *Styles, cfg *AppConfig) *App {
 	return app
 }
 
+// SetGitSync sets the GitSync instance for status display.
+// Pass nil to disable sync status in the UI.
+func (a *App) SetGitSync(gs *sync.GitSync) {
+	a.gitSync = gs
+}
+
 // isFirstRun checks if this appears to be the first time running the app.
 // We detect this by checking if data files exist and are empty.
 func isFirstRun(store *storage.Storage) bool {
@@ -177,12 +188,19 @@ func tickCmd() tea.Cmd {
 
 // Init initializes the app and loads all data asynchronously.
 func (a *App) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		tickCmd(),
 		a.taskPane.LoadTasksCmd(),
 		a.timerPane.LoadTimerCmd(),
 		a.habitsPane.LoadHabitsCmd(),
-	)
+	}
+
+	// Trigger initial sync status refresh if GitSync is available
+	if a.gitSync != nil {
+		cmds = append(cmds, refreshSyncStatusCmd(a.gitSync))
+	}
+
+	return tea.Batch(cmds...)
 }
 
 // Update handles all messages and routes them appropriately.
@@ -291,6 +309,13 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		cmd := a.habitsPane.Update(msg)
 		return a, cmd
+
+	case syncStatusMsg:
+		// Update cached sync status (ignore errors - just don't update display)
+		if msg.err == nil && msg.status != nil {
+			a.syncStatus = msg.status
+		}
+		return a, nil
 	}
 
 	switch msg := msg.(type) {
@@ -936,6 +961,9 @@ func (a *App) renderTitleBar() string {
 		timerStatus = a.styles.TimerRunningStyle.Render(fmt.Sprintf("▶ %s %s", project, elapsed))
 	}
 
+	// Sync status indicator
+	syncStatus := a.renderSyncStatus()
+
 	// Current date/time
 	now := time.Now()
 	dateStr := now.Format("Mon Jan 2 · 15:04")
@@ -945,10 +973,11 @@ func (a *App) renderTitleBar() string {
 	titleWidth := lipgloss.Width(title)
 	statsWidth := lipgloss.Width(stats)
 	timerWidth := lipgloss.Width(timerStatus)
+	syncWidth := lipgloss.Width(syncStatus)
 	dateWidth := lipgloss.Width(date)
 
-	usedWidth := titleWidth + statsWidth + timerWidth + dateWidth
-	spacerWidth := a.width - usedWidth - 6
+	usedWidth := titleWidth + statsWidth + timerWidth + syncWidth + dateWidth
+	spacerWidth := a.width - usedWidth - 8
 	if spacerWidth < 2 {
 		spacerWidth = 2
 	}
@@ -971,10 +1000,61 @@ func (a *App) renderTitleBar() string {
 		parts = append(parts, timerStatus)
 	}
 
+	if syncStatus != "" {
+		parts = append(parts, "  "+syncStatus)
+	}
+
 	parts = append(parts, rightSpacer)
 	parts = append(parts, date)
 
 	return strings.Join(parts, "")
+}
+
+// renderSyncStatus renders the sync status indicator for the title bar.
+// Returns empty string if sync is disabled or status unknown.
+func (a *App) renderSyncStatus() string {
+	// No GitSync configured = no indicator
+	if a.gitSync == nil {
+		return ""
+	}
+
+	// No status yet = show loading indicator
+	if a.syncStatus == nil {
+		return a.styles.SyncDisabledStyle.Render("⟳")
+	}
+
+	s := a.syncStatus
+
+	// Not a git repo
+	if !s.IsRepo {
+		return ""
+	}
+
+	// Build status indicator
+	var indicator string
+
+	// Check for pending changes first (most common state during use)
+	if s.HasChanges {
+		indicator = a.styles.SyncPendingStyle.Render("●")
+	} else if s.Ahead > 0 && s.Behind > 0 {
+		// Both ahead and behind (diverged)
+		indicator = a.styles.SyncAheadStyle.Render(fmt.Sprintf("↑%d", s.Ahead)) +
+			a.styles.SyncBehindStyle.Render(fmt.Sprintf("↓%d", s.Behind))
+	} else if s.Ahead > 0 {
+		// Ahead of remote (need to push)
+		indicator = a.styles.SyncAheadStyle.Render(fmt.Sprintf("↑%d", s.Ahead))
+	} else if s.Behind > 0 {
+		// Behind remote (need to pull)
+		indicator = a.styles.SyncBehindStyle.Render(fmt.Sprintf("↓%d", s.Behind))
+	} else if !s.HasRemote {
+		// No remote configured
+		indicator = a.styles.SyncDisabledStyle.Render("−")
+	} else {
+		// All synced
+		indicator = a.styles.SyncSyncedStyle.Render("✓")
+	}
+
+	return indicator
 }
 
 // renderHelpBar creates the bottom help bar with context-sensitive hints.
@@ -1061,7 +1141,16 @@ func (a *App) SetStatus(msg string, isErr bool) {
 
 // Run starts the Bubble Tea program with the given storage backend, styles, and config.
 func Run(store *storage.Storage, styles *Styles, cfg *AppConfig) error {
+	return RunWithSync(store, styles, cfg, nil)
+}
+
+// RunWithSync starts the Bubble Tea program with optional GitSync for status display.
+// Pass nil for gitSync to disable sync status indicator in the UI.
+func RunWithSync(store *storage.Storage, styles *Styles, cfg *AppConfig, gitSync *sync.GitSync) error {
 	app := NewApp(store, styles, cfg)
+	if gitSync != nil {
+		app.SetGitSync(gitSync)
+	}
 	p := tea.NewProgram(app,
 		tea.WithAltScreen(),
 		tea.WithMouseCellMotion(), // Enable mouse support

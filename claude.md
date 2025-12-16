@@ -12,6 +12,15 @@ Reference: `docs/ARCHITECTURE.md` for patterns, `skills/` for domain knowledge.
 
 ---
 
+## Git Commit Guidelines
+
+- **Do NOT include AI attribution** in commit messages (no "Generated with Claude Code", no "Co-Authored-By: Claude" or similar)
+- Keep commit messages clean, professional, and focused on the changes
+- Use conventional commit format: `type: description`
+- Types: `feat`, `fix`, `docs`, `refactor`, `test`, `chore`
+
+---
+
 ## Sub-Agent Architecture
 
 You will delegate work to specialized sub-agents. Each agent has deep expertise and follows rigorous processes. **Never skip the research and planning phases.**

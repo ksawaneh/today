@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"today/internal/storage"
+	"today/internal/sync"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -221,5 +222,21 @@ func redoCmd(manager *UndoManager) tea.Cmd {
 	return func() tea.Msg {
 		desc, err := manager.Redo()
 		return redoResultMsg{desc: desc, err: err}
+	}
+}
+
+// =============================================================================
+// Sync Commands
+// =============================================================================
+
+// refreshSyncStatusCmd returns a command that checks git sync status.
+// Returns nil command if gitSync is nil (sync disabled).
+func refreshSyncStatusCmd(gs *sync.GitSync) tea.Cmd {
+	if gs == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		status, err := gs.Status()
+		return syncStatusMsg{status: status, err: err}
 	}
 }

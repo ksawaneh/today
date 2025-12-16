@@ -15,11 +15,22 @@ import (
 	"today/internal/fsutil"
 )
 
+// SaveContext contains information about a save operation for semantic commit messages.
+// It provides context about what operation was performed, enabling meaningful git commits
+// like "Complete task: Review PR" instead of generic "Update tasks".
+type SaveContext struct {
+	Filename  string // The file being saved (e.g., "tasks.json")
+	Operation string // The operation type: "add", "complete", "delete", "toggle", "start", "stop", "update"
+	ItemType  string // The item type: "task", "habit", "timer"
+	ItemName  string // Human-readable name (truncated task text, habit name, project name)
+}
+
 // Storage handles all file I/O operations
 type Storage struct {
-	dataDir string
-	onSave  func(filename string) // Optional callback triggered after file saves
-	now     func() time.Time      // injectable clock for deterministic tests
+	dataDir           string
+	onSave            func(filename string)  // Legacy callback triggered after file saves
+	onSaveWithContext func(ctx SaveContext)  // Context-aware callback for semantic commits
+	now               func() time.Time       // injectable clock for deterministic tests
 }
 
 const (
@@ -70,8 +81,16 @@ func (s *Storage) Now() time.Time {
 
 // SetOnSave registers a callback to be called after each file save.
 // This is used for git sync auto-commit functionality.
+// Deprecated: Use SetOnSaveWithContext for semantic commit messages.
 func (s *Storage) SetOnSave(fn func(filename string)) {
 	s.onSave = fn
+}
+
+// SetOnSaveWithContext registers a context-aware callback for git sync.
+// The callback receives semantic information about the operation, enabling
+// meaningful commit messages like "Complete task: Review PR".
+func (s *Storage) SetOnSaveWithContext(fn func(ctx SaveContext)) {
+	s.onSaveWithContext = fn
 }
 
 // GetDataDir returns the path to the data directory.
@@ -139,12 +158,28 @@ func (s *Storage) writeJSONAtomic(filename string, v any) error {
 		return fmt.Errorf("write %s: %w", filename, err)
 	}
 
-	// Trigger callback after successful write (for git sync)
+	// Trigger legacy callback after successful write (for backward compatibility)
 	if s.onSave != nil {
 		s.onSave(filename)
 	}
 
 	return nil
+}
+
+// notifySaveWithContext triggers the context-aware callback if registered.
+// This should be called after writeJSONAtomic when semantic context is available.
+func (s *Storage) notifySaveWithContext(ctx SaveContext) {
+	if s.onSaveWithContext != nil {
+		s.onSaveWithContext(ctx)
+	}
+}
+
+// truncateForCommit truncates a string for use in commit messages.
+func truncateForCommit(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	return s[:maxLen-1] + "…"
 }
 
 func (s *Storage) loadJSONWithRecovery(filename string, v any) error {
@@ -253,6 +288,14 @@ func (s *Storage) AddTask(text, project string, priority Priority, dueDate *time
 		return nil, err
 	}
 
+	// Notify with semantic context for git commit
+	s.notifySaveWithContext(SaveContext{
+		Filename:  "tasks.json",
+		Operation: "add",
+		ItemType:  "task",
+		ItemName:  truncateForCommit(task.Text, 50),
+	})
+
 	return &task, nil
 }
 
@@ -299,7 +342,19 @@ func (s *Storage) RestoreTask(task Task) error {
 	}
 
 	store.Tasks = append(store.Tasks, task)
-	return s.SaveTasks(store)
+	if err := s.SaveTasks(store); err != nil {
+		return err
+	}
+
+	// Notify with semantic context for git commit
+	s.notifySaveWithContext(SaveContext{
+		Filename:  "tasks.json",
+		Operation: "restore",
+		ItemType:  "task",
+		ItemName:  truncateForCommit(task.Text, 50),
+	})
+
+	return nil
 }
 
 // CompleteTask marks a task as done
@@ -311,10 +366,21 @@ func (s *Storage) CompleteTask(id string) error {
 
 	for i := range store.Tasks {
 		if store.Tasks[i].ID == id {
+			taskText := store.Tasks[i].Text
 			store.Tasks[i].Done = true
 			now := time.Now()
 			store.Tasks[i].CompletedAt = &now
-			return s.SaveTasks(store)
+			if err := s.SaveTasks(store); err != nil {
+				return err
+			}
+			// Notify with semantic context for git commit
+			s.notifySaveWithContext(SaveContext{
+				Filename:  "tasks.json",
+				Operation: "complete",
+				ItemType:  "task",
+				ItemName:  truncateForCommit(taskText, 50),
+			})
+			return nil
 		}
 	}
 
@@ -330,9 +396,20 @@ func (s *Storage) UncompleteTask(id string) error {
 
 	for i := range store.Tasks {
 		if store.Tasks[i].ID == id {
+			taskText := store.Tasks[i].Text
 			store.Tasks[i].Done = false
 			store.Tasks[i].CompletedAt = nil
-			return s.SaveTasks(store)
+			if err := s.SaveTasks(store); err != nil {
+				return err
+			}
+			// Notify with semantic context for git commit
+			s.notifySaveWithContext(SaveContext{
+				Filename:  "tasks.json",
+				Operation: "reopen",
+				ItemType:  "task",
+				ItemName:  truncateForCommit(taskText, 50),
+			})
+			return nil
 		}
 	}
 
@@ -348,8 +425,19 @@ func (s *Storage) DeleteTask(id string) error {
 
 	for i := range store.Tasks {
 		if store.Tasks[i].ID == id {
+			taskText := store.Tasks[i].Text
 			store.Tasks = append(store.Tasks[:i], store.Tasks[i+1:]...)
-			return s.SaveTasks(store)
+			if err := s.SaveTasks(store); err != nil {
+				return err
+			}
+			// Notify with semantic context for git commit
+			s.notifySaveWithContext(SaveContext{
+				Filename:  "tasks.json",
+				Operation: "delete",
+				ItemType:  "task",
+				ItemName:  truncateForCommit(taskText, 50),
+			})
+			return nil
 		}
 	}
 
@@ -479,7 +567,19 @@ func (s *Storage) RestoreHabit(habit Habit, logs []HabitLog) error {
 		store.Logs = append(store.Logs, HabitLog{HabitID: habit.ID, Date: date})
 	}
 
-	return s.SaveHabits(store)
+	if err := s.SaveHabits(store); err != nil {
+		return err
+	}
+
+	// Notify with semantic context for git commit
+	s.notifySaveWithContext(SaveContext{
+		Filename:  "habits.json",
+		Operation: "restore",
+		ItemType:  "habit",
+		ItemName:  truncateForCommit(habit.Name, 50),
+	})
+
+	return nil
 }
 
 // SetHabitDoneOnDate sets a habit's completion for a specific YYYY-MM-DD date.
@@ -565,6 +665,14 @@ func (s *Storage) AddHabit(name, icon string) (*Habit, error) {
 		return nil, err
 	}
 
+	// Notify with semantic context for git commit
+	s.notifySaveWithContext(SaveContext{
+		Filename:  "habits.json",
+		Operation: "add",
+		ItemType:  "habit",
+		ItemName:  truncateForCommit(habit.Name, 50),
+	})
+
 	return &habit, nil
 }
 
@@ -576,10 +684,28 @@ func (s *Storage) ToggleHabitToday(habitID string) (bool, error) {
 		return false, err
 	}
 
+	// Find habit name for context
+	var habitName string
+	for _, h := range store.Habits {
+		if h.ID == habitID {
+			habitName = h.Name
+			break
+		}
+	}
+
 	wasDone := s.IsHabitDoneOnDate(store, habitID, today)
 	if err := s.SetHabitDoneOnDate(habitID, today, !wasDone); err != nil {
 		return false, err
 	}
+
+	// Notify with semantic context for git commit
+	s.notifySaveWithContext(SaveContext{
+		Filename:  "habits.json",
+		Operation: "toggle",
+		ItemType:  "habit",
+		ItemName:  truncateForCommit(habitName, 50),
+	})
+
 	return !wasDone, nil
 }
 
@@ -643,10 +769,12 @@ func (s *Storage) DeleteHabit(id string) error {
 		return err
 	}
 
-	// Remove habit
+	// Remove habit and capture name for context
+	var habitName string
 	found := false
 	for i := range store.Habits {
 		if store.Habits[i].ID == id {
+			habitName = store.Habits[i].Name
 			store.Habits = append(store.Habits[:i], store.Habits[i+1:]...)
 			found = true
 			break
@@ -665,7 +793,19 @@ func (s *Storage) DeleteHabit(id string) error {
 	}
 	store.Logs = newLogs
 
-	return s.SaveHabits(store)
+	if err := s.SaveHabits(store); err != nil {
+		return err
+	}
+
+	// Notify with semantic context for git commit
+	s.notifySaveWithContext(SaveContext{
+		Filename:  "habits.json",
+		Operation: "delete",
+		ItemType:  "habit",
+		ItemName:  truncateForCommit(habitName, 50),
+	})
+
+	return nil
 }
 
 // ============================================================================
@@ -717,7 +857,19 @@ func (s *Storage) StartTimer(project string) error {
 		StartedAt: now,
 	}
 
-	return s.SaveTimer(store)
+	if err := s.SaveTimer(store); err != nil {
+		return err
+	}
+
+	// Notify with semantic context for git commit
+	s.notifySaveWithContext(SaveContext{
+		Filename:  "timer.json",
+		Operation: "start",
+		ItemType:  "timer",
+		ItemName:  truncateForCommit(project, 50),
+	})
+
+	return nil
 }
 
 // StopTimer stops the current timer
@@ -731,6 +883,7 @@ func (s *Storage) StopTimer() error {
 		return nil // Nothing to stop
 	}
 
+	projectName := store.Current.Project
 	now := time.Now()
 	entry := TimerEntry{
 		Project:   store.Current.Project,
@@ -740,7 +893,19 @@ func (s *Storage) StopTimer() error {
 	store.Entries = append(store.Entries, entry)
 	store.Current = nil
 
-	return s.SaveTimer(store)
+	if err := s.SaveTimer(store); err != nil {
+		return err
+	}
+
+	// Notify with semantic context for git commit
+	s.notifySaveWithContext(SaveContext{
+		Filename:  "timer.json",
+		Operation: "stop",
+		ItemType:  "timer",
+		ItemName:  truncateForCommit(projectName, 50),
+	})
+
+	return nil
 }
 
 func startOfDay(t time.Time) time.Time {

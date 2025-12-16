@@ -4,7 +4,10 @@
 // the event loop non-blocking.
 package ui
 
-import "today/internal/storage"
+import (
+	"today/internal/storage"
+	"today/internal/sync"
+)
 
 // =============================================================================
 // Undo/Redo Messages
@@ -112,4 +115,14 @@ type habitDeletedMsg struct {
 	habit *storage.Habit     // Full habit for restoration on undo
 	logs  []storage.HabitLog // Associated logs for restoration
 	err   error
+}
+
+// =============================================================================
+// Sync Messages
+// =============================================================================
+
+// syncStatusMsg is sent when git sync status is refreshed.
+type syncStatusMsg struct {
+	status *sync.Status
+	err    error
 }

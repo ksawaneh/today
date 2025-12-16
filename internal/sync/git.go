@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"today/internal/fsutil"
+	"today/internal/storage"
 )
 
 // Config holds git sync configuration.
@@ -55,9 +56,10 @@ type GitSync struct {
 	config  *Config
 
 	// Debouncing for auto-commit
-	pendingFiles map[string]bool
-	commitTimer  *time.Timer
-	mu           gosync.Mutex
+	pendingFiles    map[string]bool
+	pendingContexts []storage.SaveContext // Semantic context for commit messages
+	commitTimer     *time.Timer
+	mu              gosync.Mutex
 
 	// Serializes git operations to avoid index/lock conflicts.
 	opMu gosync.Mutex
@@ -325,8 +327,51 @@ func (g *GitSync) Push() error {
 	return nil
 }
 
+// AddRemote adds a git remote with the given name and URL.
+// If the remote already exists, it will be updated.
+func (g *GitSync) AddRemote(name, url string) error {
+	g.opMu.Lock()
+	defer g.opMu.Unlock()
+
+	if !g.IsRepo() {
+		return fmt.Errorf("not a git repository - run 'today sync --init' first")
+	}
+
+	if name == "" {
+		return fmt.Errorf("remote name is required")
+	}
+	if url == "" {
+		return fmt.Errorf("remote URL is required")
+	}
+
+	// Check if remote already exists
+	remotes, _ := g.runGitTimeout(defaultGitTimeout, "remote")
+	hasRemote := false
+	for _, line := range strings.Split(trimOutput(remotes), "\n") {
+		if strings.TrimSpace(line) == name {
+			hasRemote = true
+			break
+		}
+	}
+
+	if hasRemote {
+		// Update existing remote
+		if _, err := g.runGitTimeout(defaultGitTimeout, "remote", "set-url", name, url); err != nil {
+			return fmt.Errorf("failed to update remote: %w", err)
+		}
+	} else {
+		// Add new remote
+		if _, err := g.runGitTimeout(defaultGitTimeout, "remote", "add", name, url); err != nil {
+			return fmt.Errorf("failed to add remote: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // OnFileSaved is called when a data file is saved.
 // It queues the file for commit with debouncing.
+// Deprecated: Use OnFileSavedWithContext for semantic commit messages.
 func (g *GitSync) OnFileSaved(filename string) {
 	if !g.config.Enabled || !g.config.AutoCommit {
 		return
@@ -348,6 +393,31 @@ func (g *GitSync) OnFileSaved(filename string) {
 	g.commitTimer = time.AfterFunc(g.debounceDuration, g.flushCommit)
 }
 
+// OnFileSavedWithContext is called when a data file is saved with semantic context.
+// It queues the file and context for a commit with debouncing.
+// The context enables meaningful commit messages like "Complete task: Review PR".
+func (g *GitSync) OnFileSavedWithContext(ctx storage.SaveContext) {
+	if !g.config.Enabled || !g.config.AutoCommit {
+		return
+	}
+
+	if !g.IsRepo() {
+		return
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	g.pendingFiles[ctx.Filename] = true
+	g.pendingContexts = append(g.pendingContexts, ctx)
+
+	// Reset timer - commit after debounce duration of no changes
+	if g.commitTimer != nil {
+		g.commitTimer.Stop()
+	}
+	g.commitTimer = time.AfterFunc(g.debounceDuration, g.flushCommit)
+}
+
 // Flush immediately commits any pending files without waiting for debounce.
 func (g *GitSync) Flush() {
 	g.mu.Lock()
@@ -360,23 +430,74 @@ func (g *GitSync) Flush() {
 	g.flushCommit()
 }
 
-// flushCommit commits all pending files.
+// flushCommit commits all pending files with their contexts.
 func (g *GitSync) flushCommit() {
 	g.mu.Lock()
 	files := make([]string, 0, len(g.pendingFiles))
 	for f := range g.pendingFiles {
 		files = append(files, f)
 	}
+	contexts := g.pendingContexts
 	g.pendingFiles = make(map[string]bool)
+	g.pendingContexts = nil
 	g.mu.Unlock()
 
 	if len(files) > 0 {
 		// Ignore errors from auto-commit (log them in future)
-		_ = g.Commit(files)
+		_ = g.commitWithContexts(files, contexts)
 	}
 }
 
+// commitWithContexts stages and commits files with semantic context for the message.
+func (g *GitSync) commitWithContexts(files []string, contexts []storage.SaveContext) error {
+	g.opMu.Lock()
+	defer g.opMu.Unlock()
+
+	if !g.IsRepo() {
+		return fmt.Errorf("not a git repository - run 'today sync --init' first")
+	}
+
+	if len(files) == 0 {
+		return nil
+	}
+
+	// Stage files
+	args := append([]string{"add"}, files...)
+	if _, err := g.runGitTimeout(defaultGitTimeout, args...); err != nil {
+		return fmt.Errorf("failed to stage files: %w", err)
+	}
+
+	// Check if there are staged changes.
+	staged, err := g.runGitTimeout(defaultGitTimeout, "diff", "--cached", "--name-only")
+	if err != nil {
+		return fmt.Errorf("failed to check staged changes: %w", err)
+	}
+	if trimOutput(staged) == "" {
+		// No changes staged, nothing to commit
+		return nil
+	}
+
+	// Generate commit message from contexts
+	message := g.generateCommitMessageFromContexts(files, contexts)
+
+	// Commit
+	if _, err := g.runGitTimeout(commitGitTimeout, "-c", "commit.gpgsign=false", "commit", "-m", message); err != nil {
+		return fmt.Errorf("failed to commit: %w", err)
+	}
+
+	// Auto-push if enabled
+	if g.config.AutoPush {
+		if err := g.Push(); err != nil {
+			// Log but don't fail - data is safely committed locally
+			return fmt.Errorf("committed locally, but push failed: %w", err)
+		}
+	}
+
+	return nil
+}
+
 // generateCommitMessage creates an appropriate commit message for the files.
+// Deprecated: Use generateCommitMessageFromContexts for semantic messages.
 func (g *GitSync) generateCommitMessage(files []string) string {
 	if g.config.CommitMessage != "" && g.config.CommitMessage != "auto" {
 		return g.config.CommitMessage
@@ -395,6 +516,82 @@ func (g *GitSync) generateCommitMessage(files []string) string {
 	}
 
 	return fmt.Sprintf("Update %d files", len(files))
+}
+
+// generateCommitMessageFromContexts creates semantic commit messages from contexts.
+// Examples: "Complete task: Review PR", "Add habit: Exercise", "Start timer: work"
+func (g *GitSync) generateCommitMessageFromContexts(files []string, contexts []storage.SaveContext) string {
+	// If custom message configured, use it
+	if g.config.CommitMessage != "" && g.config.CommitMessage != "auto" {
+		return g.config.CommitMessage
+	}
+
+	// No contexts - fall back to file-based message
+	if len(contexts) == 0 {
+		return g.generateCommitMessage(files)
+	}
+
+	// Single context - generate semantic message
+	if len(contexts) == 1 {
+		ctx := contexts[0]
+		return formatSemanticMessage(ctx)
+	}
+
+	// Multiple contexts - check if they're all the same operation type
+	firstOp := contexts[0].Operation
+	firstType := contexts[0].ItemType
+	allSame := true
+	for _, ctx := range contexts[1:] {
+		if ctx.Operation != firstOp || ctx.ItemType != firstType {
+			allSame = false
+			break
+		}
+	}
+
+	if allSame {
+		// All same operation: "Complete 3 tasks"
+		return fmt.Sprintf("%s %d %ss", capitalizeFirst(firstOp), len(contexts), firstType)
+	}
+
+	// Mixed operations - summarize
+	return fmt.Sprintf("Update: %d changes", len(contexts))
+}
+
+// formatSemanticMessage creates a human-readable message from a SaveContext.
+func formatSemanticMessage(ctx storage.SaveContext) string {
+	verb := capitalizeFirst(ctx.Operation)
+
+	switch ctx.Operation {
+	case "add":
+		return fmt.Sprintf("Add %s: %s", ctx.ItemType, ctx.ItemName)
+	case "complete":
+		return fmt.Sprintf("Complete %s: %s", ctx.ItemType, ctx.ItemName)
+	case "delete":
+		return fmt.Sprintf("Delete %s: %s", ctx.ItemType, ctx.ItemName)
+	case "reopen":
+		return fmt.Sprintf("Reopen %s: %s", ctx.ItemType, ctx.ItemName)
+	case "toggle":
+		return fmt.Sprintf("Toggle %s: %s", ctx.ItemType, ctx.ItemName)
+	case "restore":
+		return fmt.Sprintf("Restore %s: %s", ctx.ItemType, ctx.ItemName)
+	case "start":
+		return fmt.Sprintf("Start %s: %s", ctx.ItemType, ctx.ItemName)
+	case "stop":
+		return fmt.Sprintf("Stop %s: %s", ctx.ItemType, ctx.ItemName)
+	default:
+		if ctx.ItemName != "" {
+			return fmt.Sprintf("%s %s: %s", verb, ctx.ItemType, ctx.ItemName)
+		}
+		return fmt.Sprintf("%s %s", verb, ctx.ItemType)
+	}
+}
+
+// capitalizeFirst capitalizes the first letter of a string.
+func capitalizeFirst(s string) string {
+	if s == "" {
+		return s
+	}
+	return strings.ToUpper(s[:1]) + s[1:]
 }
 
 // runGit executes a git command and returns its output.

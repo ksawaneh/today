@@ -63,6 +63,13 @@ type Styles struct {
 
 	StatLabelStyle lipgloss.Style
 	StatValueStyle lipgloss.Style
+
+	// Sync status styles
+	SyncSyncedStyle   lipgloss.Style // Synced (green checkmark)
+	SyncPendingStyle  lipgloss.Style // Has uncommitted changes (yellow)
+	SyncAheadStyle    lipgloss.Style // Ahead of remote (blue)
+	SyncBehindStyle   lipgloss.Style // Behind remote (orange)
+	SyncDisabledStyle lipgloss.Style // No remote / sync disabled (muted)
 }
 
 // NewStyles creates a new Styles instance from the given config.
@@ -226,6 +233,23 @@ func (s *Styles) initComponentStyles() {
 	s.StatValueStyle = lipgloss.NewStyle().
 		Foreground(s.ColorText).
 		Bold(true)
+
+	// Sync status styles
+	s.SyncSyncedStyle = lipgloss.NewStyle().
+		Foreground(s.ColorSuccess)
+
+	s.SyncPendingStyle = lipgloss.NewStyle().
+		Foreground(s.ColorWarning)
+
+	s.SyncAheadStyle = lipgloss.NewStyle().
+		Foreground(s.ColorAccent)
+
+	s.SyncBehindStyle = lipgloss.NewStyle().
+		Foreground(s.ColorWarning).
+		Bold(true)
+
+	s.SyncDisabledStyle = lipgloss.NewStyle().
+		Foreground(s.ColorMuted)
 }
 
 // RenderHelp renders help text with key bindings using the given styles.
